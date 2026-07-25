@@ -17,6 +17,9 @@ import android.media.session.PlaybackState;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Base64;
+import android.util.Log;
+
+import com.google.android.youtube.pro.receivers.NotificationActionReceiver;
 
 public class ForegroundService extends Service {
 
@@ -36,7 +39,7 @@ public class ForegroundService extends Service {
 
 
     private void initMediaSession() {
-        mediaSession = new MediaSession(getApplicationContext(), "YourMediaSessionTag");
+        mediaSession = new MediaSession(getApplicationContext(), "YTPROMediaSession");
         mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
 
         mediaSession.setCallback(new MediaSession.Callback() {
@@ -45,6 +48,7 @@ public class ForegroundService extends Service {
                 super.onPlay();
                 getApplicationContext().sendBroadcast(new Intent("TRACKS_TRACKS")
                         .putExtra("actionname", "PLAY_ACTION"));
+                        Log.e("pause","play session called");
 
             }
 
@@ -53,6 +57,8 @@ public class ForegroundService extends Service {
                 super.onPause();
                 getApplicationContext().sendBroadcast(new Intent("TRACKS_TRACKS")
                         .putExtra("actionname", "PAUSE_ACTION"));
+                        
+                        Log.e("pause","pause session called");
             }
 
             @Override
@@ -118,32 +124,32 @@ public class ForegroundService extends Service {
             playbackState= PlaybackState.STATE_BUFFERING;
         }
 
-        updateMediaSessionMetadata(title, subtitle, largeIcon, duration); // Example usage
-        updatePlaybackState(currentPosition, playbackState); // Example usage
+        updateMediaSessionMetadata(title, subtitle, largeIcon, duration); 
+        updatePlaybackState(currentPosition, playbackState); 
 
         Intent openAppIntent = new Intent(cont, MainActivity.class);
         openAppIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent openAppPendingIntent = PendingIntent.getActivity(cont, 0, openAppIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
 
-        Intent playIntent = new Intent(cont, NotificationActionService.class);
+        Intent playIntent = new Intent(cont, NotificationActionReceiver.class);
         playIntent.setAction("PLAY_ACTION");
         PendingIntent playPendingIntent = PendingIntent.getBroadcast(cont, 0, playIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
 
-        Intent pauseIntent = new Intent(cont, NotificationActionService.class);
+        Intent pauseIntent = new Intent(cont, NotificationActionReceiver.class);
         pauseIntent.setAction("PAUSE_ACTION");
         PendingIntent pausePendingIntent = PendingIntent.getBroadcast(cont, 0, pauseIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
 
-        Intent nextIntent = new Intent(cont, NotificationActionService.class);
+        Intent nextIntent = new Intent(cont, NotificationActionReceiver.class);
         nextIntent.setAction("NEXT_ACTION");
         PendingIntent nextPendingIntent = PendingIntent.getBroadcast(cont, 0, nextIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
 
-        Intent prevIntent = new Intent(cont, NotificationActionService.class);
+        Intent prevIntent = new Intent(cont, NotificationActionReceiver.class);
         prevIntent.setAction("PREV_ACTION");
         PendingIntent prevPendingIntent = PendingIntent.getBroadcast(cont, 0, prevIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
 
         Notification.Builder builder = (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
 
-        builder.setSmallIcon(R.drawable.app_icon)
+        builder.setSmallIcon((Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? R.drawable.notification : R.mipmap.app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setLargeIcon(largeIcon)
@@ -189,7 +195,13 @@ public class ForegroundService extends Service {
         };
 
         IntentFilter filter = new IntentFilter(ACTION_UPDATE_NOTIFICATION);
-        registerReceiver(updateReceiver, filter);
+
+          if (Build.VERSION.SDK_INT >= 34 && getApplicationInfo().targetSdkVersion >= 34) {
+           registerReceiver(updateReceiver, filter,RECEIVER_EXPORTED);
+          }
+          else{
+           registerReceiver(updateReceiver, filter);
+          }
     }
 
     @Override
@@ -204,7 +216,19 @@ public class ForegroundService extends Service {
     private void setupNotification(Intent intent) {
         long duration = intent.getLongExtra("duration", 0);
         long currentPosition = intent.getLongExtra("currentPosition", 0);
-        int playbackState = intent.getIntExtra("playbackState", PlaybackState.STATE_NONE);
+        String action = intent.getStringExtra("action");
+        
+        int playbackState;
+        if("pause".equals(action)){
+            playbackState= PlaybackState.STATE_PAUSED;
+        }
+        else if("play".equals(action)){
+            playbackState= PlaybackState.STATE_PLAYING;
+        }else{
+            playbackState= PlaybackState.STATE_BUFFERING;
+        }
+        
+        
         String title = intent.getStringExtra("title");
         String subtitle = intent.getStringExtra("subtitle");
         String icon = intent.getStringExtra("icon");
@@ -216,47 +240,37 @@ public class ForegroundService extends Service {
         openAppIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent openAppPendingIntent = PendingIntent.getActivity(this, 0, openAppIntent, PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
-        Intent playIntent = new Intent(this, NotificationActionService.class);
+        Intent playIntent = new Intent(this, NotificationActionReceiver.class);
         playIntent.setAction("PLAY_ACTION");
         PendingIntent playPendingIntent = PendingIntent.getBroadcast(this, 0, playIntent, PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
-        Intent pauseIntent = new Intent(this, NotificationActionService.class);
+        Intent pauseIntent = new Intent(this, NotificationActionReceiver.class);
         pauseIntent.setAction("PAUSE_ACTION");
         PendingIntent pausePendingIntent = PendingIntent.getBroadcast(this, 0, pauseIntent, PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
-        Intent nextIntent = new Intent(this, NotificationActionService.class);
+        Intent nextIntent = new Intent(this, NotificationActionReceiver.class);
         nextIntent.setAction("NEXT_ACTION");
         PendingIntent nextPendingIntent = PendingIntent.getBroadcast(this, 0, nextIntent, PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
-        Intent prevIntent = new Intent(this, NotificationActionService.class);
+        Intent prevIntent = new Intent(this, NotificationActionReceiver.class);
         prevIntent.setAction("PREV_ACTION");
         PendingIntent prevPendingIntent = PendingIntent.getBroadcast(this, 0, prevIntent, PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
         Notification.Builder builder = (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
 
-                builder.setSmallIcon(R.drawable.app_icon)
+                builder.setSmallIcon((Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ? R.drawable.notification : R.mipmap.app_icon)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setLargeIcon(largeIcon)
+                .setStyle(new Notification.MediaStyle().setMediaSession(mediaSession.getSessionToken()))
                 .setContentIntent(openAppPendingIntent);
 
-        // Set appropriate actions based on playback state
-        switch (playbackState) {
-            case PlaybackState.STATE_PLAYING:
-                builder.addAction(R.drawable.ic_pause_white, "Pause", pausePendingIntent);
-                break;
-            case PlaybackState.STATE_PAUSED:
-                builder.addAction(R.drawable.ic_play_arrow_white, "Play", playPendingIntent);
-                break;
-            case PlaybackState.STATE_BUFFERING:
-                // Add buffering related actions if needed
-                break;
-            default:
-                break;
-        }
 
-        builder.addAction(R.drawable.ic_skip_previous_white, "Previous", prevPendingIntent)
-                .addAction(R.drawable.ic_skip_next_white, "Next", nextPendingIntent);
+        builder.addAction(R.drawable.ic_skip_previous_white, "Previous", prevPendingIntent);
+        
+                    builder.addAction(R.drawable.ic_pause_white, "Pause", pausePendingIntent);
+                    
+                builder.addAction(R.drawable.ic_skip_next_white, "Next", nextPendingIntent);
 
         Notification notification = builder.build();
 
@@ -266,6 +280,12 @@ public class ForegroundService extends Service {
 
         startForeground(1, notification);
     }
+    
+    
+    
+    
+    
+    
     private void updateMediaSessionMetadata(String title, String artist, Bitmap albumArt, long duration) {
         MediaMetadata metadata = new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title)
@@ -286,12 +306,15 @@ public class ForegroundService extends Service {
 
     private void updatePlaybackState(long currentPosition, int state) {
         PlaybackState playbackState = new PlaybackState.Builder()
-                .setActions(PlaybackState.ACTION_PLAY_PAUSE
+                .setActions(PlaybackState.ACTION_PLAY
                         | PlaybackState.ACTION_SKIP_TO_NEXT
                         | PlaybackState.ACTION_PAUSE
                         | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO)
                 .setState(state, currentPosition, 1.0f) // 1.0f for playback speed
                 .build();
+                
+                
+                // rn it doesn't have a function to increase the playback speed if someone increases it from the youtube player , cuz people don't usually use that , and i am too lazy to implement it here
 
         mediaSession.setPlaybackState(playbackState);
     }

@@ -1,50 +1,83 @@
 package com.google.android.youtube.pro;
 
-import android.Manifest;
-import android.app.*;
-import android.os.*;
-import android.view.*;
-import android.widget.*;
-import android.content.*;
-import android.content.res.*;
-import android.graphics.*;
-import android.net.*;
-import android.util.*;
-import android.webkit.*;
-import java.io.*;
-import android.content.pm.*;
-import java.net.URLEncoder;
+import android.app.Activity;
+import android.app.PictureInPictureParams;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.util.Rational;
+import android.view.View;
+import android.view.WindowManager;
+import android.webkit.CookieManager;
+import android.widget.Toast;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
+import android.widget.Button;
+
+// Import the separated components
+import com.google.android.youtube.pro.webview.YTProWebView;
+import com.google.android.youtube.pro.webview.YTProWebViewClient;
+import com.google.android.youtube.pro.webview.YTProWebChromeClient;
+import com.google.android.youtube.pro.webview.WebAppInterface;
+import com.google.android.youtube.pro.webview.BinaryStreamManager;
+
+import com.google.android.youtube.pro.receivers.MediaCommandReceiver;
 
 public class MainActivity extends Activity {
 
-    WebView web;
-    private boolean portrait = false;
-    BroadcastReceiver broadcastReceiver;
+    public boolean portrait = false;
+    public boolean isPlaying = false;
+    public boolean mediaSession = false;
+    public boolean isPip = false;
+    public boolean dL = false;
 
-
-    private String icon = "";
-    private String title = "";
-    private String subtitle = "";
-    private long duration;
-    private boolean isPlaying = false;
-    private boolean dL=false;
-
+    private YTProWebView web;
+    private MediaCommandReceiver broadcastReceiver;
+    private OnBackInvokedCallback backCallback;
+    public BinaryStreamManager streamManager;
+    
+    
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.main);
+        
+        SharedPreferences prefs = getSharedPreferences("YTPRO", MODE_PRIVATE);
+        if (!prefs.contains("bgplay")) {
+            prefs.edit().putBoolean("bgplay", true).apply();
+        }
 
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         load(false);
     }
+
     public void load(boolean dl) {
-        dL=dl;
+              
         
+        this.dL = dl;
         web = findViewById(R.id.web);
+        
         web.getSettings().setJavaScriptEnabled(true);
         web.getSettings().setSupportZoom(true);
         web.getSettings().setBuiltInZoomControls(true);
         web.getSettings().setDisplayZoomControls(false);
+        web.getSettings().setDomStorageEnabled(true);
+        web.getSettings().setDatabaseEnabled(true);
+        web.getSettings().setMediaPlaybackRequiresUserGesture(false); 
+        web.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+
+        CookieManager cookieManager = CookieManager.getInstance();
+        cookieManager.setAcceptCookie(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            cookieManager.setAcceptThirdPartyCookies(web, true);
+        }
 
         Intent intent = getIntent();
         String action = intent.getAction();
@@ -58,389 +91,119 @@ public class MainActivity extends Activity {
                 url = sharedText;
             }
         }
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+          web.getSettings().setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+
+
+        web.addJavascriptInterface(new WebAppInterface(this, web), "Android");
+        web.setWebChromeClient(new YTProWebChromeClient(this, web));
+        web.setWebViewClient(new YTProWebViewClient(this, web));
+        
         web.loadUrl(url);
-        web.getSettings().setDomStorageEnabled(true); web.getSettings().setDatabaseEnabled(true);
-        web.addJavascriptInterface(new WebAppInterface(this), "Android");
-        web.setWebChromeClient(new CustomWebClient());
-        web.getSettings().setMediaPlaybackRequiresUserGesture(false); // Allow autoplay
-        web.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
-
-        web.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onPageStarted(WebView p1, String p2, Bitmap p3) {
-
-                super.onPageStarted(p1, p2, p3);
-            }
-
-            @Override
-            public void onPageFinished(WebView p1, String url) {
-
-                web.loadUrl("javascript:(function () { var script = document.createElement('script'); script.src='https://cdn.jsdelivr.net/npm/ytpro'; document.body.appendChild(script);  })();");
-                web.loadUrl("javascript:(function () { var script = document.createElement('script'); script.src='https://cdn.jsdelivr.net/npm/ytpro/bgplay.js'; document.body.appendChild(script);  })();");
-                if(dl){
-                    web.loadUrl("javascript:(function () {window.location.hash='download';})();");
-                    //dL=false;                
-                }
-                if(!url.contains("#bgplay") && isPlaying){
-                    isPlaying=false;
-                    stopService(new Intent(getApplicationContext(), ForegroundService.class));
-                }
-
-                super.onPageFinished(p1, url);
-            }
-        });
-
-        setReceiver();
+        setupReceiver();
+        setupBackNavigation();
+        streamManager = new BinaryStreamManager(web,this);
+        
+        
     }
+         
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if(requestCode == 101) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                web.loadUrl("https://m.youtube.com");
-            } else {
-                Toast.makeText(getApplicationContext(),getString(R.string.grant_mic), Toast.LENGTH_SHORT).show();
-            }
-        } else if(requestCode == 1) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_DENIED) {
-                Toast.makeText(getApplicationContext(), getString(R.string.grant_storage), Toast.LENGTH_SHORT).show();
-            }
+   
+
+    private void setupReceiver() {
+        broadcastReceiver = new MediaCommandReceiver(web);
+        if (Build.VERSION.SDK_INT >= 34 && getApplicationInfo().targetSdkVersion >= 34) {
+            registerReceiver(broadcastReceiver, new IntentFilter("TRACKS_TRACKS"), RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(broadcastReceiver, new IntentFilter("TRACKS_TRACKS"));
         }
     }
-    @Override
-    public void onBackPressed() {
+
+    private void setupBackNavigation() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            OnBackInvokedDispatcher dispatcher = getOnBackInvokedDispatcher();
+            backCallback = new OnBackInvokedCallback() {
+                @Override
+                public void onBackInvoked() {
+                    handleBackPress();
+                }
+            };
+            dispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback);
+        }
+    }
+
+    private void handleBackPress() {
         if (web.canGoBack()) {
             web.goBack();
-        }
-        else {
+        } else {
             finish();
         }
     }
 
     @Override
-    public void onPictureInPictureModeChanged (boolean isInPictureInPictureMode, Configuration newConfig) {
-        web.loadUrl(isInPictureInPictureMode ?
-                "javascript:document.getElementsByClassName('video-stream')[0].play();" :
-                "javascript:removePIP();");
+    public void onBackPressed() {
+        handleBackPress();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 101) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                web.loadUrl("https://m.youtube.com");
+            } else {
+                Toast.makeText(getApplicationContext(), getString(R.string.grant_mic), Toast.LENGTH_SHORT).show();
+            }
+        } else if (requestCode == 1) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_DENIED) {
+                Toast.makeText(getApplicationContext(), getString(R.string.grant_storage), Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+        web.evaluateJavascript(isInPictureInPictureMode ? "PIPlayer();" : "removePIP();", null);
+        isPip = isInPictureInPictureMode;
     }
 
     @Override
     protected void onUserLeaveHint() {
         super.onUserLeaveHint();
-        web.loadUrl("javascript:PIPlayer();");
-    }
-
-
-
-    public class CustomWebClient extends WebChromeClient {
-        private View mCustomView;
-        private WebChromeClient.CustomViewCallback mCustomViewCallback;
-        protected FrameLayout frame;
-        private int mOriginalOrientation;
-        private int mOriginalSystemUiVisibility;
-        public CustomWebClient() {}
-
-
-        public Bitmap getDefaultVideoPoster() {
-
-            if (MainActivity.this == null) {
-                return null;
-            }
-            return BitmapFactory.decodeResource(MainActivity.this.getApplicationContext().getResources(), 2130837573);
-        }
-
-
-        public void onShowCustomView(View paramView, WebChromeClient.CustomViewCallback viewCallback) {
-
-            this.mOriginalOrientation = portrait ?
-                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT :
-                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
-
-            if (this.mCustomView != null) {
-                onHideCustomView();
-                return;
-            }
-            this.mCustomView = paramView;
-            this.mOriginalSystemUiVisibility = MainActivity.this.getWindow().getDecorView().getSystemUiVisibility();
-            MainActivity.this.setRequestedOrientation(this.mOriginalOrientation);
-            this.mOriginalOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;this.mCustomViewCallback = viewCallback; ((FrameLayout)MainActivity.this.getWindow().getDecorView()).addView(this.mCustomView, new FrameLayout.LayoutParams(-1, -1)); MainActivity.this.getWindow().getDecorView().setSystemUiVisibility(3846);
-        }
-        public void onHideCustomView() {
-
-            ((FrameLayout)MainActivity.this.getWindow().getDecorView()).removeView(this.mCustomView);
-            this.mCustomView = null;
-            MainActivity.this.getWindow().getDecorView().setSystemUiVisibility(this.mOriginalSystemUiVisibility);
-            MainActivity.this.setRequestedOrientation(this.mOriginalOrientation);
-            this.mOriginalOrientation = portrait ?
-                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT :
-                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
-
-            this.mCustomViewCallback = null;
-            web.clearFocus();
-        }
-
-        @Override
-        public void onPermissionRequest(final PermissionRequest request) {
-            if(Build.VERSION.SDK_INT > 22 && request.getOrigin().toString().contains("youtube.com")) {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_DENIED) {
-                    requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, 101);
-                } else {
-                    request.grant(request.getResources());
-                }
-            }
-        }
-    }
-
-    private void downloadFile(String filename, String url, String mtype) {
-        
-        if (Build.VERSION.SDK_INT > 22 && Build.VERSION.SDK_INT < 28 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_DENIED) {
-            runOnUiThread(() -> Toast.makeText(getApplicationContext(), R.string.grant_storage, Toast.LENGTH_SHORT).show());
-            requestPermissions(new String[] {Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1);
-        }
-        try {
-            try {
-                String encodedFileName = URLEncoder.encode(filename, "UTF-8").replaceAll("\\+", "%20");
-
-                DownloadManager downloadManager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                request.setTitle(filename)
-                        .setDescription(filename)
-                        .setMimeType(mtype)
-                        .setAllowedOverMetered(true)
-                        .setAllowedOverRoaming(true)
-                        .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, encodedFileName)
-                        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE |
-                                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                downloadManager.enqueue(request);
-                Toast.makeText(this, getString(R.string.dl_started), Toast.LENGTH_SHORT).show();
-            } catch (UnsupportedEncodingException e) {
-                e.printStackTrace();
-            }
-        } catch (Exception ignored) {
-            Toast.makeText(this, ignored.toString(), Toast.LENGTH_SHORT).show();
-        }
-    }
-
-
-
-
-    public class WebAppInterface {
-        Context mContext;
-        WebAppInterface(Context c) {
-            mContext = c;
-        }
-
-        @JavascriptInterface
-        public void showToast(String txt) {
-
-            Toast.makeText(getApplicationContext(), txt+"", Toast.LENGTH_SHORT).show();
-        }
-        @JavascriptInterface
-        public void gohome(String x) {
-            Intent startMain = new Intent(Intent.ACTION_MAIN);
-            startMain.addCategory(Intent.CATEGORY_HOME);
-            startMain.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(startMain);
-        }
-
-        @JavascriptInterface
-        public void downvid(String name,String url, String m) {
-            downloadFile(name,url,m);
-        }
-        @JavascriptInterface
-        public void fullScreen(boolean value){
-            portrait =  value;
-        }
-        @JavascriptInterface
-        public void oplink(String url) {
-            Intent i = new Intent();
-            i.setAction(Intent.ACTION_VIEW);
-            i.setData(Uri.parse(url));
-            startActivity(i);
-        }
-        @JavascriptInterface
-        public String getInfo() {
-            PackageManager manager = getApplicationContext().getPackageManager();
-            try{
-                PackageInfo info = manager.getPackageInfo(getApplicationContext().getPackageName(), PackageManager.GET_ACTIVITIES);
-                return info.versionName+"";
-            } catch(PackageManager.NameNotFoundException e){
-                return "1.0";
-            }
-
-        }
-
-        @JavascriptInterface
-        public void bgStart(String iconn , String titlen , String subtitlen,long dura) {
-//  ForegroundService.setupNotification(
-            icon  =iconn;
-            title =titlen;
-            subtitle=subtitlen;
-            duration= dura;
-            isPlaying=true;
-
-            Intent intent = new Intent(getApplicationContext(), ForegroundService.class);
-
-// Add extras to the Intent
-            intent.putExtra("icon", icon);
-            intent.putExtra("title", title);
-            intent.putExtra("subtitle", subtitle);
-            intent.putExtra("duration", duration);
-            intent.putExtra("currentPosition", 0);
-
-            startService(intent);
-
-        }
-
-        @JavascriptInterface
-        public void bgUpdate(String iconn , String titlen , String subtitlen,long dura) {
-
-
-            icon =iconn;
-            title =titlen;
-            subtitle=subtitlen;
-            duration=(long)(dura);
-
-
-            getApplicationContext().sendBroadcast(new Intent("UPDATE_NOTIFICATION")
-                    .putExtra("icon", icon)
-                    .putExtra("title", title)
-                    .putExtra("subtitle", subtitle)
-                    .putExtra("duration", duration)
-                    .putExtra("currentPosition", "0")
-                    .putExtra("action", "pause")
-            );
-
-        }
-        @JavascriptInterface
-        public void bgStop() {
-            Log.e("hii","stop");
-
-            isPlaying=false;
-
-            stopService(new Intent(getApplicationContext(), ForegroundService.class));
-
-
-
-        }
-        @JavascriptInterface
-        public void bgPause(long ct) {
-            Log.e("hii","pause");
-
-
-//ForegroundService.updateNotification(icon,title,subtitle,"play", getApplicationContext(),duration,ct);
-
-            getApplicationContext().sendBroadcast(new Intent("UPDATE_NOTIFICATION")
-                    .putExtra("icon", icon)
-                    .putExtra("title", title)
-                    .putExtra("subtitle", subtitle)
-                    .putExtra("duration", duration)
-                    .putExtra("currentPosition", ct)
-                    .putExtra("action", "pause")
-            );
-
-        }
-        @JavascriptInterface
-        public void bgPlay(long ct) {
-            Log.e("hii","play");
-//ForegroundService.updateNotification(icon,title,subtitle,"pause",getApplicationContext(),duration,ct);
-
-
-            getApplicationContext().sendBroadcast(new Intent("UPDATE_NOTIFICATION")
-                    .putExtra("icon", icon)
-                    .putExtra("title", title)
-                    .putExtra("subtitle", subtitle)
-                    .putExtra("duration", duration)
-                    .putExtra("currentPosition", ct)
-                    .putExtra("action", "play")
-            );
-
-        }
-        @JavascriptInterface
-        public void bgBuffer(long ct) {
-            Log.e("hii","play");
-//ForegroundService.updateNotification(icon,title,subtitle,"buffer",getApplicationContext(),duration,ct);
-
-
-            getApplicationContext().sendBroadcast(new Intent("UPDATE_NOTIFICATION")
-                    .putExtra("icon", icon)
-                    .putExtra("title", title)
-                    .putExtra("subtitle", subtitle)
-                    .putExtra("duration", duration)
-                    .putExtra("currentPosition", ct)
-                    .putExtra("action", "buffer")
-            );
-
-
-        }
-        @JavascriptInterface
-        public void pipvid(String x) {
-            if (android.os.Build.VERSION.SDK_INT >= 26) {
+        if (Build.VERSION.SDK_INT >= 26 && web.getUrl() != null && web.getUrl().contains("watch")) {
+            if (isPlaying) {
                 try {
-                    PictureInPictureParams params;
-                    if(portrait){
-                        params = new PictureInPictureParams.Builder().setAspectRatio(new Rational(9,16)).build();
-                    }
-                    else{
-                        params = new PictureInPictureParams.Builder().setAspectRatio(new Rational(16, 9)).build();
-                    }
+                    isPip = true;
+                    PictureInPictureParams params = new PictureInPictureParams.Builder()
+                            .setAspectRatio(new Rational(portrait ? 9 : 16, portrait ? 16 : 9))
+                            .build();
                     enterPictureInPictureMode(params);
                 } catch (IllegalStateException e) {
                     e.printStackTrace();
                 }
-
-            } else {
-                Toast.makeText(getApplicationContext(), getString(R.string.no_pip), Toast.LENGTH_SHORT).show();
             }
-        }}
+        }
+    }
 
-
-
-
-
-    public void setReceiver(){
-        broadcastReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                String action = intent.getExtras().getString("actionname");
-
-                switch (action) {
-                    case "PLAY_ACTION":
-                    case "PAUSE_ACTION":
-                        web.loadUrl("javascript:playPause();");
-                        break;
-                    case "NEXT_ACTION":
-                        web.loadUrl("javascript:playNext();");
-                        break;
-                    case "PREV_ACTION":
-                        web.loadUrl("javascript:playPrev();");
-                        break;
-                    case "SEEKTO":
-                        web.loadUrl("javascript:seekTo('" + intent.getExtras().getString("pos") + "');");
-
-                        break;
-                }
-
-
-
-                Log.e("Action",action);
-
-
-            }
-        };
-
-
-        registerReceiver(broadcastReceiver, new IntentFilter("TRACKS_TRACKS"));
-
+    @Override
+    protected void onPause() {
+        super.onPause();
+        CookieManager.getInstance().flush();
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-
-        unregisterReceiver(broadcastReceiver);
+        stopService(new Intent(getApplicationContext(), ForegroundService.class));
+        if (broadcastReceiver != null) unregisterReceiver(broadcastReceiver);
+        if (Build.VERSION.SDK_INT >= 33 && backCallback != null) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
+        }
+        if (streamManager != null) {
+            streamManager.cleanup();
+        }
     }
-
 }
